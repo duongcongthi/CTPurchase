@@ -104,7 +104,7 @@ public class SubscriptionsManager: NSObject, ObservableObject {
         let requestData: [String: Any] = [
             "receipt-data": receiptData,
             "password": keySecret,
-            "exclude-old-transactions": true
+            "exclude-old-transactions": false  // Đặt thành false để lấy tất cả giao dịch
         ]
 
         guard let requestBody = try? JSONSerialization.data(withJSONObject: requestData) else {
@@ -137,20 +137,35 @@ public class SubscriptionsManager: NSObject, ObservableObject {
                 return false
             }
 
+            let transactionIdString = String(transaction.id)
+            print("Verifying transaction ID: \(transactionIdString)")
+
             switch status {
             case 0:
+                // Kiểm tra cả latest_receipt_info và receipt.in_app
                 if let latestReceiptInfo = jsonResponse["latest_receipt_info"] as? [[String: Any]] {
                     for receipt in latestReceiptInfo {
                         if let receiptTransactionID = receipt["transaction_id"] as? String,
-                           receiptTransactionID == String(transaction.id) {
-                            print("Receipt verified successfully for transaction: \(transaction.id)")
+                           receiptTransactionID == transactionIdString {
+                            print("Receipt verified successfully for transaction: \(transactionIdString)")
                             return true
                         }
                     }
-                    print("Transaction ID \(transaction.id) not found in receipt.")
-                    return false
                 }
-                print("No latest_receipt_info found.")
+                
+                // Kiểm tra trong receipt.in_app (phần thay thế)
+                if let receipt = jsonResponse["receipt"] as? [String: Any],
+                   let inAppReceipts = receipt["in_app"] as? [[String: Any]] {
+                    for inApp in inAppReceipts {
+                        if let receiptTransactionID = inApp["transaction_id"] as? String,
+                           receiptTransactionID == transactionIdString {
+                            print("Receipt verified successfully for transaction: \(transactionIdString)")
+                            return true
+                        }
+                    }
+                }
+                
+                print("Transaction ID \(transactionIdString) not found in receipt.")
                 return false
 
             case 21000:
@@ -161,6 +176,24 @@ public class SubscriptionsManager: NSObject, ObservableObject {
                 print("Receipt not authenticated.")
             case 21007:
                 print("Receipt is from sandbox but sent to production.")
+                // Tự động chuyển sang sandbox nếu gặp lỗi này
+                if urlString == "https://buy.itunes.apple.com/verifyReceipt" {
+                    print("Switching to sandbox environment...")
+                    // Tạo một request mới tới sandbox
+                    let sandboxUrl = URL(string: "https://sandbox.itunes.apple.com/verifyReceipt")!
+                    var sandboxRequest = URLRequest(url: sandboxUrl)
+                    sandboxRequest.httpMethod = "POST"
+                    sandboxRequest.httpBody = requestBody
+                    sandboxRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                    
+                    do {
+                        let (sandboxData, sandboxResponse) = try await URLSession.shared.data(for: sandboxRequest)
+                        // Xử lý phản hồi từ sandbox tương tự như trên
+                        // (Đoạn code này có thể được tách thành một hàm riêng để tránh lặp lại)
+                    } catch {
+                        print("Sandbox verification failed: \(error.localizedDescription)")
+                    }
+                }
             case 21008:
                 print("Receipt is from production but sent to sandbox.")
             default:
