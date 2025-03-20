@@ -19,7 +19,7 @@ public class SubscriptionsManager: NSObject, ObservableObject {
     public init(productIDs: [String], keySecret: String, appGroupID: String) {
         self.productIDs = productIDs
         self.keySecret = keySecret
-        self.userDefaults = UserDefaults.init(suiteName: appGroupID)!
+        self.userDefaults = UserDefaults(suiteName: appGroupID)!
         self.hasPro = userDefaults.bool(forKey: "hasPro")
         super.init()
         self.updates = observeTransactionUpdates()
@@ -37,13 +37,17 @@ public class SubscriptionsManager: NSObject, ObservableObject {
             return "N/A"
         }
         
-        // Sử dụng localizedPrice từ extension
         return product.localizedPrice ?? (product.isFree ? "Free" : "N/A")
     }
 
     private func observeTransactionUpdates() -> Task<Void, Never> {
         Task(priority: .background) { [weak self] in
-            for await _ in StoreKit.Transaction.updates {
+            for await verificationResult in StoreKit.Transaction.updates {
+                if case .verified(let transaction) = verificationResult {
+                    if await self?.verifyReceipt(transaction: transaction) == true {
+                        await transaction.finish()
+                    }
+                }
                 await self?.updatePurchasedProducts()
             }
         }
@@ -104,7 +108,7 @@ public class SubscriptionsManager: NSObject, ObservableObject {
         let requestData: [String: Any] = [
             "receipt-data": receiptData,
             "password": keySecret,
-            "exclude-old-transactions": false  // Đặt thành false để lấy tất cả giao dịch
+            "exclude-old-transactions": false
         ]
 
         guard let requestBody = try? JSONSerialization.data(withJSONObject: requestData) else {
@@ -117,13 +121,21 @@ public class SubscriptionsManager: NSObject, ObservableObject {
         #else
         let urlString = "https://buy.itunes.apple.com/verifyReceipt"
         #endif
-        let url = URL(string: urlString)!
-
+        
+        return await verifyReceiptWithURL(urlString: urlString, requestBody: requestBody, transaction: transaction)
+    }
+    
+    private func verifyReceiptWithURL(urlString: String, requestBody: Data, transaction: StoreKit.Transaction) async -> Bool {
+        guard let url = URL(string: urlString) else {
+            print("Invalid URL")
+            return false
+        }
+        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.httpBody = requestBody
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-
+        
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
@@ -142,60 +154,40 @@ public class SubscriptionsManager: NSObject, ObservableObject {
 
             switch status {
             case 0:
-                // Kiểm tra cả latest_receipt_info và receipt.in_app
-                if let latestReceiptInfo = jsonResponse["latest_receipt_info"] as? [[String: Any]] {
-                    for receipt in latestReceiptInfo {
-                        if let receiptTransactionID = receipt["transaction_id"] as? String,
-                           receiptTransactionID == transactionIdString {
-                            print("Receipt verified successfully for transaction: \(transactionIdString)")
-                            return true
-                        }
-                    }
-                }
+                return checkReceiptForTransaction(jsonResponse: jsonResponse, transactionIdString: transactionIdString)
                 
-                // Kiểm tra trong receipt.in_app (phần thay thế)
-                if let receipt = jsonResponse["receipt"] as? [String: Any],
-                   let inAppReceipts = receipt["in_app"] as? [[String: Any]] {
-                    for inApp in inAppReceipts {
-                        if let receiptTransactionID = inApp["transaction_id"] as? String,
-                           receiptTransactionID == transactionIdString {
-                            print("Receipt verified successfully for transaction: \(transactionIdString)")
-                            return true
-                        }
-                    }
+            case 21007:
+                print("Receipt is from sandbox but sent to production.")
+                // Tự động chuyển sang sandbox nếu đang ở production
+                if urlString == "https://buy.itunes.apple.com/verifyReceipt" {
+                    print("Switching to sandbox environment...")
+                    return await verifyReceiptWithURL(
+                        urlString: "https://sandbox.itunes.apple.com/verifyReceipt",
+                        requestBody: requestBody,
+                        transaction: transaction
+                    )
                 }
-                
-                print("Transaction ID \(transactionIdString) not found in receipt.")
                 return false
-
+                
+            case 21008:
+                print("Receipt is from production but sent to sandbox.")
+                // Tự động chuyển sang production nếu đang ở sandbox
+                if urlString == "https://sandbox.itunes.apple.com/verifyReceipt" {
+                    print("Switching to production environment...")
+                    return await verifyReceiptWithURL(
+                        urlString: "https://buy.itunes.apple.com/verifyReceipt",
+                        requestBody: requestBody,
+                        transaction: transaction
+                    )
+                }
+                return false
+                
             case 21000:
                 print("App Store could not read the JSON object.")
             case 21002:
                 print("Receipt data malformed.")
             case 21003:
                 print("Receipt not authenticated.")
-            case 21007:
-                print("Receipt is from sandbox but sent to production.")
-                // Tự động chuyển sang sandbox nếu gặp lỗi này
-                if urlString == "https://buy.itunes.apple.com/verifyReceipt" {
-                    print("Switching to sandbox environment...")
-                    // Tạo một request mới tới sandbox
-                    let sandboxUrl = URL(string: "https://sandbox.itunes.apple.com/verifyReceipt")!
-                    var sandboxRequest = URLRequest(url: sandboxUrl)
-                    sandboxRequest.httpMethod = "POST"
-                    sandboxRequest.httpBody = requestBody
-                    sandboxRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                    
-                    do {
-                        let (sandboxData, sandboxResponse) = try await URLSession.shared.data(for: sandboxRequest)
-                        // Xử lý phản hồi từ sandbox tương tự như trên
-                        // (Đoạn code này có thể được tách thành một hàm riêng để tránh lặp lại)
-                    } catch {
-                        print("Sandbox verification failed: \(error.localizedDescription)")
-                    }
-                }
-            case 21008:
-                print("Receipt is from production but sent to sandbox.")
             default:
                 print("Receipt verification failed with status: \(status)")
             }
@@ -205,16 +197,47 @@ public class SubscriptionsManager: NSObject, ObservableObject {
             return false
         }
     }
+    
+    private func checkReceiptForTransaction(jsonResponse: [String: Any], transactionIdString: String) -> Bool {
+        // Kiểm tra trong latest_receipt_info (subscriptions)
+        if let latestReceiptInfo = jsonResponse["latest_receipt_info"] as? [[String: Any]] {
+            for receipt in latestReceiptInfo {
+                if let receiptTransactionID = receipt["transaction_id"] as? String,
+                   receiptTransactionID == transactionIdString {
+                    print("Receipt verified successfully for transaction: \(transactionIdString)")
+                    return true
+                }
+            }
+        }
+        
+        // Kiểm tra trong receipt.in_app (one-time purchases)
+        if let receipt = jsonResponse["receipt"] as? [String: Any],
+           let inAppReceipts = receipt["in_app"] as? [[String: Any]] {
+            for inApp in inAppReceipts {
+                if let receiptTransactionID = inApp["transaction_id"] as? String,
+                   receiptTransactionID == transactionIdString {
+                    print("Receipt verified successfully for transaction: \(transactionIdString)")
+                    return true
+                }
+            }
+        }
+        
+        print("Transaction ID \(transactionIdString) not found in receipt.")
+        return false
+    }
 
     private func updatePurchasedProducts() async {
+        var updatedProducts = Set<String>()
+        
         for await result in StoreKit.Transaction.currentEntitlements {
             guard case .verified(let transaction) = result else { continue }
             if transaction.revocationDate == nil {
-                purchasedProductIDs.insert(transaction.productID)
-            } else {
-                purchasedProductIDs.remove(transaction.productID)
+                updatedProducts.insert(transaction.productID)
             }
         }
+        
+        // Cập nhật purchasedProductIDs và hasPro một lần duy nhất
+        purchasedProductIDs = updatedProducts
         hasPro = !purchasedProductIDs.isEmpty
     }
 }
@@ -231,6 +254,8 @@ extension SubscriptionsManager: SKPaymentTransactionObserver {
         return true
     }
 }
+
+// MARK: - Product Extensions
 extension Product {
     var isFree: Bool {
         price == 0.00
