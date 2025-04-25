@@ -190,7 +190,7 @@ public class PurchaseManager: /*NSObject,*/ ObservableObject {
     }
 
     // MARK: - Product Loading
-    func loadProducts() async {
+    public func loadProducts() async {
         guard !isLoading else { return } // Prevent concurrent loading
         print("🚀 Loading products...")
         await MainActor.run { isLoading = true; errorMessage = nil }
@@ -220,7 +220,7 @@ public class PurchaseManager: /*NSObject,*/ ObservableObject {
     }
     
     // MARK: - Purchase Flow
-    func buyProduct(_ product: Product) async -> Bool {
+    public func buyProduct(_ product: Product) async -> Bool {
         guard !isPurchased else {
             print("User is already premium.")
             return true // Indicate success (already purchased)
@@ -283,7 +283,7 @@ public class PurchaseManager: /*NSObject,*/ ObservableObject {
     }
 
     // MARK: - Get Product Info (For UI Display)
-    func getInfo(for productType: PurchaseCase) -> ProductInfo? {
+    public func getInfo(for productType: PurchaseCase) -> ProductInfo? {
         guard let product = products.first(where: { $0.id == productType.description }) else {
             return nil // Product not found/loaded
         }
@@ -303,7 +303,7 @@ public class PurchaseManager: /*NSObject,*/ ObservableObject {
     }
 
     // MARK: - Update Purchased Status
-    func updatePurchasedProducts() async {
+    public func updatePurchasedProducts() async {
         print("Updating purchased products status...")
         var currentEntitlements = Set<String>()
         
@@ -332,7 +332,7 @@ public class PurchaseManager: /*NSObject,*/ ObservableObject {
     }
 
     // MARK: - Restore Purchases
-    func restorePurchases() async -> Bool {
+    public func restorePurchases() async -> Bool {
         await MainActor.run { isLoading = true; errorMessage = nil }
         print("Attempting to restore purchases...")
 
@@ -360,7 +360,7 @@ public class PurchaseManager: /*NSObject,*/ ObservableObject {
     }
 
     // MARK: - Helper Methods
-    func hasFreeTrialForWeekSubscription() -> Bool {
+    public func hasFreeTrialForWeekSubscription() -> Bool {
         guard let weeklyProduct = productForType(.week),
               let subscription = weeklyProduct.subscription else {
             return false
@@ -369,7 +369,7 @@ public class PurchaseManager: /*NSObject,*/ ObservableObject {
         return subscription.introductoryOffer?.paymentMode == .freeTrial
     }
 
-    func productForType(_ type: PurchaseCase) -> Product? {
+    public func productForType(_ type: PurchaseCase) -> Product? {
         return products.first(where: { $0.id == type.description })
     }
 }
