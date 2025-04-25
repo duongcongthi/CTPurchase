@@ -24,7 +24,7 @@ enum PurchaseCase: String {
 }
 
 // Simple data structure for display purposes in the UI
-class ProductInfo {
+struct ProductInfo {
     var title = ""
     var subtitle = ""
     var localizePrice = ""
