@@ -4,19 +4,17 @@
 import PackageDescription
 
 let package = Package(
-    name: "DCTPurchase",
-    platforms: [.iOS(.v15)],
+    name: "CTPurchase",
+    platforms: [
+        .iOS(.v15) // Chỉ hỗ trợ iOS 15+
+    ],
     products: [
-        // Products define the executables and libraries a package produces, making them visible to other packages.
         .library(
-            name: "DCTPurchase",
-            targets: ["DCTPurchase"]),
+            name: "CTPurchase",
+            targets: ["CTPurchase"]),
     ],
     targets: [
-        // Targets are the basic building blocks of a package, defining a module or a test suite.
-        // Targets can depend on other targets in this package and products from dependencies.
         .target(
-            name: "DCTPurchase"),
-
+            name: "CTPurchase"),
     ]
 )
