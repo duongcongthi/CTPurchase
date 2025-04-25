@@ -46,10 +46,12 @@ public class PurchaseManager: /*NSObject,*/ ObservableObject {
     // MARK: - Properties
     static public let shared = PurchaseManager()
     private let kIsPremium = "kIsPremium"
+    private let kDebugOverrideActive = "kDebugOverrideActive" // Key for the override flag
 
     // Use a standard @Published property, managed manually
     @Published public private(set) var isPurchased: Bool = false
-    
+    @Published public private(set) var isDebugOverrideActive: Bool = false // Flag to track override state
+
     @Published public var products: [Product] = []
     @Published public var isLoading: Bool = false
     @Published public var errorMessage: String? {
@@ -114,8 +116,16 @@ public class PurchaseManager: /*NSObject,*/ ObservableObject {
     
     // Helper to load initial state
     private func loadInitialPurchaseState() {
+        // Load the override flag first
+        self.isDebugOverrideActive = userDefaults.bool(forKey: kDebugOverrideActive)
+        print("Initial isDebugOverrideActive state loaded: \(self.isDebugOverrideActive)")
+
+        // Load the purchase state
         self.isPurchased = userDefaults.bool(forKey: kIsPremium)
         print("Initial isPurchased state loaded: \(self.isPurchased)")
+
+        // If an override is active, the loaded isPurchased state (potentially forced) is kept initially.
+        // If no override is active, the state will be verified/updated by updatePurchasedProducts called in configure.
     }
 
     deinit {
@@ -154,16 +164,25 @@ public class PurchaseManager: /*NSObject,*/ ObservableObject {
                              }
                          }
 
-                         if stateChanged {
-                             self.purchasedProductIDs = currentIDs
-                             let newPurchaseState = !currentIDs.isEmpty
-                             if self.isPurchased != newPurchaseState {
-                                 self.isPurchased = newPurchaseState
-                                 // *** Save the updated state to UserDefaults ***
-                                 self.userDefaults.set(newPurchaseState, forKey: kIsPremium)
-                                 print("Transaction listener (MainActor): isPurchased updated to \(self.isPurchased) and saved.")
+                         // *** IMPORTANT: Only update isPurchased and save if debug override is NOT active ***
+                         if !self.isDebugOverrideActive {
+                             if stateChanged {
+                                 self.purchasedProductIDs = currentIDs
+                                 let newPurchaseState = !currentIDs.isEmpty
+                                 if self.isPurchased != newPurchaseState {
+                                     self.isPurchased = newPurchaseState
+                                     // *** Save the updated state to UserDefaults ***
+                                     self.userDefaults.set(newPurchaseState, forKey: kIsPremium)
+                                     print("Transaction listener (MainActor): isPurchased updated to \(self.isPurchased) and saved.")
+                                 }
+                                  print("Transaction listener (MainActor): State updated. purchasedProductIDs: \(currentIDs)")
                              }
-                              print("Transaction listener (MainActor): State updated. purchasedProductIDs: \(currentIDs)")
+                         } else {
+                             // If override is active, only update the internal ID set, but DO NOT change isPurchased or save to UserDefaults
+                             if stateChanged {
+                                 self.purchasedProductIDs = currentIDs
+                                 print("Transaction listener (MainActor): Override ACTIVE. Updated purchasedProductIDs: \(currentIDs). isPurchased remains \(self.isPurchased).")
+                             }
                          }
                     }
                     await transaction.finish()
@@ -319,15 +338,22 @@ public class PurchaseManager: /*NSObject,*/ ObservableObject {
         }
         
         await MainActor.run {
-            self.purchasedProductIDs = currentEntitlements
-            let newPurchaseState = !currentEntitlements.isEmpty
-            if self.isPurchased != newPurchaseState {
-                self.isPurchased = newPurchaseState
-                // *** Save the updated state to UserDefaults ***
-                self.userDefaults.set(newPurchaseState, forKey: kIsPremium)
-                print("Purchase status changed to: \(self.isPurchased) and saved.")
+            // *** IMPORTANT: Only update isPurchased and save if debug override is NOT active ***
+            if !self.isDebugOverrideActive {
+                self.purchasedProductIDs = currentEntitlements
+                let newPurchaseState = !currentEntitlements.isEmpty
+                if self.isPurchased != newPurchaseState {
+                    self.isPurchased = newPurchaseState
+                    // *** Save the updated state to UserDefaults ***
+                    self.userDefaults.set(newPurchaseState, forKey: kIsPremium)
+                    print("Purchase status changed to: \(self.isPurchased) and saved.")
+                }
+                 print("Active entitlements: \(currentEntitlements)")
+            } else {
+                // If override is active, only update the internal ID set, but DO NOT change isPurchased or save to UserDefaults
+                self.purchasedProductIDs = currentEntitlements
+                print("Purchase status update skipped due to ACTIVE debug override. isPurchased remains \(self.isPurchased). Active entitlements: \(currentEntitlements)")
             }
-             print("Active entitlements: \(currentEntitlements)")
         }
     }
 
@@ -371,5 +397,37 @@ public class PurchaseManager: /*NSObject,*/ ObservableObject {
 
     public func productForType(_ type: PurchaseCase) -> Product? {
         return products.first(where: { $0.id == type.description })
+    }
+
+ 
+    /// Forces the purchase state for debugging purposes.
+    /// This directly sets the `isPurchased` flag and saves it to UserDefaults,
+    /// bypassing standard StoreKit checks until cleared.
+    /// - Parameter forcePremium: The desired debug purchase state.
+    public func debugSetPurchaseOverride(forcePremium: Bool) {
+        print("⚠️ DEBUG: Forcing purchase state to \(forcePremium)")
+        self.isDebugOverrideActive = true // Activate the override flag
+        self.userDefaults.set(true, forKey: kDebugOverrideActive) // Persist the override flag
+        // Directly update the published property on the main thread
+        self.isPurchased = forcePremium
+        // Save this forced state to UserDefaults
+        self.userDefaults.set(forcePremium, forKey: kIsPremium)
+        print("⚠️ DEBUG: Saved forced state (\(forcePremium)) and activated override flag (key '\(kDebugOverrideActive)')")
+        // No need to update purchasedProductIDs here, as isPurchased is the primary flag from UserDefaults
+    }
+
+    /// Clears any previously set debug purchase state override and reloads
+    /// the actual state from StoreKit entitlements.
+    public func debugClearPurchaseOverride() {
+        print("⚠️ DEBUG: Deactivating and clearing purchase state override. Reloading actual state...")
+        self.isDebugOverrideActive = false // Deactivate the flag
+        self.userDefaults.removeObject(forKey: kDebugOverrideActive) // Remove the persisted flag
+        // Task to update from the source of truth
+        Task {
+            await self.updatePurchasedProducts()
+            // updatePurchasedProducts already runs on MainActor for its final updates
+            // so we can access isPurchased safely after await.
+            print("⚠️ DEBUG: Override cleared. Actual purchase state reloaded. isPurchased is now \(self.isPurchased)")
+        }
     }
 }
