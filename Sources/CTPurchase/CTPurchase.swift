@@ -8,7 +8,7 @@
 import StoreKit
 import SwiftUI
 
-enum PurchaseCase: String {
+public enum PurchaseCase: String {
     case lifetime
     case week
     var description: String {
@@ -24,7 +24,7 @@ enum PurchaseCase: String {
 }
 
 // Simple data structure for display purposes in the UI
-struct ProductInfo {
+public struct ProductInfo {
     var title = ""
     var subtitle = ""
     var localizePrice = ""
@@ -40,12 +40,12 @@ struct ProductInfo {
     }
 }
 
-let kIsPremium = "kIsPremium"
 
 @MainActor
 public class PurchaseManager: /*NSObject,*/ ObservableObject {
     // MARK: - Properties
     static public let shared = PurchaseManager()
+    private let kIsPremium = "kIsPremium"
 
     // Use a standard @Published property, managed manually
     @Published public private(set) var isPurchased: Bool = false
