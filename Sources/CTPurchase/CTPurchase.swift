@@ -45,7 +45,7 @@ let kIsPremium = "kIsPremium"
 @MainActor
 public class PurchaseManager: /*NSObject,*/ ObservableObject {
     // MARK: - Properties
-    static let shared = PurchaseManager()
+    static public let shared = PurchaseManager()
 
     // Use a standard @Published property, managed manually
     @Published public private(set) var isPurchased: Bool = false
@@ -89,6 +89,7 @@ public class PurchaseManager: /*NSObject,*/ ObservableObject {
         // super.init() // No longer needed if not inheriting NSObject
         // self.transactionListener = listenForTransactions() // Start listener after config
         // Task { ... } // Load products after config
+       
     }
     
     // Public configure method
