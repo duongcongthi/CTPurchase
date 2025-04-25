@@ -50,7 +50,7 @@ public class PurchaseManager: /*NSObject,*/ ObservableObject {
     // Use a standard @Published property, managed manually
     @Published public private(set) var isPurchased: Bool = false
     
-    @Published var products: [Product] = []
+    @Published public var products: [Product] = []
     @Published var isLoading: Bool = false
     @Published var errorMessage: String? {
         didSet { if errorMessage != nil { isShowingErrorAlert = true } }
