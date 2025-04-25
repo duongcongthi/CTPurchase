@@ -43,7 +43,7 @@ struct ProductInfo {
 let kIsPremium = "kIsPremium"
 
 @MainActor
-class PurchaseManager: /*NSObject,*/ ObservableObject {
+public class PurchaseManager: /*NSObject,*/ ObservableObject {
     // MARK: - Properties
     static let shared = PurchaseManager()
 
