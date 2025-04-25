@@ -51,12 +51,12 @@ public class PurchaseManager: /*NSObject,*/ ObservableObject {
     @Published public private(set) var isPurchased: Bool = false
     
     @Published public var products: [Product] = []
-    @Published var isLoading: Bool = false
-    @Published var errorMessage: String? {
+    @Published public var isLoading: Bool = false
+    @Published public var errorMessage: String? {
         didSet { if errorMessage != nil { isShowingErrorAlert = true } }
     }
-    @Published var isShowingErrorAlert: Bool = false // For presenting alerts in SwiftUI
-    @Published var purchasePending: Bool = false
+    @Published public var isShowingErrorAlert: Bool = false // For presenting alerts in SwiftUI
+    @Published public var purchasePending: Bool = false
 
     // Add instance variable for appGroupID
     private var appGroupID: String?
@@ -76,7 +76,7 @@ public class PurchaseManager: /*NSObject,*/ ObservableObject {
     }
 
     // Use lazy var for productIDs to ensure bundleID is available
-    lazy var productIDs: [String] = [PurchaseCase.lifetime.description, PurchaseCase.week.description]
+    lazy public var productIDs: [String] = [PurchaseCase.lifetime.description, PurchaseCase.week.description]
     @Published var purchasedProductIDs: Set<String> = []
 
     private var transactionListener: Task<Void, Error>? // Can throw errors
