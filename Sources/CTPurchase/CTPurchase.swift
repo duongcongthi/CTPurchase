@@ -25,11 +25,11 @@ public enum PurchaseCase: String {
 
 // Simple data structure for display purposes in the UI
 public struct ProductInfo {
-    var title = ""
-    var subtitle = ""
-    var localizePrice = ""
-    var symbol = ""
-    var price: Decimal = 0.0 // Use Decimal for currency
+    public var title = ""
+    public var subtitle = ""
+    public var localizePrice = ""
+    public var symbol = ""
+    public var price: Decimal = 0.0 // Use Decimal for currency
     
     init(title: String, subtitle: String, localizePrice: String, price: Decimal, symbol: String = "$") {
         self.title = title
