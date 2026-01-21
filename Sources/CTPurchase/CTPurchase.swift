@@ -240,10 +240,7 @@ public class PurchaseManager: /*NSObject,*/ ObservableObject {
     
     // MARK: - Purchase Flow
     public func buyProduct(_ product: Product) async -> Bool {
-        guard !isPurchased else {
-            print("User is already premium.")
-            return true // Indicate success (already purchased)
-        }
+        // Removed check for existing purchase to allow upgrades/crossgrades and testing
         
         guard !isLoading else { // Prevent double tapping
             print("Purchase already in progress.")
