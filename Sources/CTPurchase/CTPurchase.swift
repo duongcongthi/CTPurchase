@@ -3,33 +3,44 @@
 //  thingstv
 //
 //  Created by DUONG THI on 26/4/25.
+//  Updated & Optimized for StoreKit 2
 //
 
 import StoreKit
 import SwiftUI
 
+// MARK: - Purchase Case Enum
 public enum PurchaseCase: String {
     case lifetime
     case week
-    var description: String {
-        // Ensure bundleID is fetched safely
+    
+    /// Hàm lấy ID sản phẩm, ưu tiên customID nếu có, nếu không fallback về bundleID + rawValue
+    func productID(customID: String? = nil) -> String {
+        if let customID = customID, !customID.isEmpty {
+            return customID
+        }
+        
         guard let bundleID = Bundle.main.bundleIdentifier else {
-            // In a real app, handle this more gracefully than fatalError
-            // Maybe return a default or log an error.
             print("ERROR: Bundle Identifier not found!")
             return "unknown.bundle.\(self.rawValue)"
         }
         return "\(bundleID).\(self.rawValue)"
     }
+    
+    /// Giữ lại thuộc tính description để tương thích 100% với code cũ gọi `.description`
+    public var description: String {
+        return productID()
+    }
 }
 
-// Simple data structure for display purposes in the UI
+// MARK: - Product Info Struct
+/// Cấu trúc dữ liệu đơn giản để hiển thị trên UI
 public struct ProductInfo {
     public var title = ""
     public var subtitle = ""
     public var localizePrice = ""
     public var symbol = ""
-    public var price: Decimal = 0.0 // Use Decimal for currency
+    public var price: Decimal = 0.0
     
     init(title: String, subtitle: String, localizePrice: String, price: Decimal, symbol: String = "$") {
         self.title = title
@@ -40,36 +51,44 @@ public struct ProductInfo {
     }
 }
 
-
+// MARK: - Purchase Manager
 @MainActor
-public class PurchaseManager: /*NSObject,*/ ObservableObject {
+public class PurchaseManager: ObservableObject {
     // MARK: - Properties
     static public let shared = PurchaseManager()
     private let kIsPremium = "kIsPremium"
-    private let kDebugOverrideActive = "kDebugOverrideActive" // Key for the override flag
+    private let kDebugOverrideActive = "kDebugOverrideActive"
 
-    // Use a standard @Published property, managed manually
     @Published public private(set) var isPurchased: Bool = false
-    @Published public private(set) var isDebugOverrideActive: Bool = false // Flag to track override state
+    @Published public private(set) var isDebugOverrideActive: Bool = false
 
     @Published public var products: [Product] = []
     @Published public var isLoading: Bool = false
     @Published public var errorMessage: String? {
         didSet { if errorMessage != nil { isShowingErrorAlert = true } }
     }
-    @Published public var isShowingErrorAlert: Bool = false // For presenting alerts in SwiftUI
+    @Published public var isShowingErrorAlert: Bool = false
     @Published public var purchasePending: Bool = false
 
-    // Add instance variable for appGroupID
     private var appGroupID: String?
     
-    // Computed property for UserDefaults
+    // Lưu trữ Custom IDs do người dùng truyền vào
+    public var customProductIDs: [PurchaseCase: String] = [:]
+    
+    // Sử dụng computed property để đảm bảo luôn lấy đúng ID tại thời điểm gọi
+    public var productIDs: [String] {
+        [
+            PurchaseCase.lifetime.productID(customID: customProductIDs[.lifetime]),
+            PurchaseCase.week.productID(customID: customProductIDs[.week])
+        ]
+    }
+
+    // Computed property cho UserDefaults hỗ trợ AppGroup
     private var userDefaults: UserDefaults {
         if let appGroupId = self.appGroupID,
            let defaults = UserDefaults(suiteName: appGroupId) {
             return defaults
         } else {
-            // If appGroupID is nil or invalid, use standard UserDefaults
             if self.appGroupID != nil {
                  print("⚠️ Failed to create UserDefaults with suiteName: \(self.appGroupID!). Falling back to standard UserDefaults.")
             }
@@ -77,68 +96,52 @@ public class PurchaseManager: /*NSObject,*/ ObservableObject {
         }
     }
 
-    // Use lazy var for productIDs to ensure bundleID is available
-    lazy public var productIDs: [String] = [PurchaseCase.lifetime.description, PurchaseCase.week.description]
     @Published var purchasedProductIDs: Set<String> = []
-
-    private var transactionListener: Task<Void, Error>? // Can throw errors
+    private var transactionListener: Task<Void, Error>?
 
     // MARK: - Initialization
-    // Make init private again if shared is the only entry point
-    // override init() {
-    private init() {
-        // Defer setup until configure is called
-        // super.init() // No longer needed if not inheriting NSObject
-        // self.transactionListener = listenForTransactions() // Start listener after config
-        // Task { ... } // Load products after config
-       
+    private init() {}
+    
+    deinit {
+        transactionListener?.cancel()
     }
     
-    // Public configure method
-    public func configure(appGroupID: String? = nil) {
+    // MARK: - Configuration
+    /// Hàm cấu hình ban đầu, hỗ trợ truyền AppGroup và Custom In-App IDs
+    public func configure(appGroupID: String? = nil, customIDs: [PurchaseCase: String]? = nil) {
         self.appGroupID = appGroupID
         
-        // Load initial purchase state after UserDefaults is determined
+        // Cập nhật customIDs nếu có
+        if let customIDs = customIDs {
+            self.customProductIDs = customIDs
+        }
+        
         loadInitialPurchaseState()
         
-        // Start listener *after* configuration
-        if transactionListener == nil { // Ensure listener is started only once
+        // Bắt đầu listener *sau khi* cấu hình xong
+        if transactionListener == nil {
              self.transactionListener = listenForTransactions()
         }
 
-        // Load products and entitlements *after* configuration
-        Task(priority: .background) { [weak self] in
+        Task(priority: .userInitiated) { [weak self] in
             guard let self = self else { return }
-            await self.loadProducts()
-            await self.updatePurchasedProducts() // This will also update isPurchased based on entitlements
+            // Ép load lại products vì có thể custom IDs vừa được set
+            await self.loadProducts(forceReload: true)
+            await self.updatePurchasedProducts()
         }
     }
     
-    // Helper to load initial state
     private func loadInitialPurchaseState() {
-        // Load the override flag first
         self.isDebugOverrideActive = userDefaults.bool(forKey: kDebugOverrideActive)
-        print("Initial isDebugOverrideActive state loaded: \(self.isDebugOverrideActive)")
-
-        // Load the purchase state
         self.isPurchased = userDefaults.bool(forKey: kIsPremium)
-        print("Initial isPurchased state loaded: \(self.isPurchased)")
-
-        // If an override is active, the loaded isPurchased state (potentially forced) is kept initially.
-        // If no override is active, the state will be verified/updated by updatePurchasedProducts called in configure.
-    }
-
-    deinit {
-        transactionListener?.cancel()
+        print("Initial state loaded - isPurchased: \(self.isPurchased), isDebugOverrideActive: \(self.isDebugOverrideActive)")
     }
 
     // MARK: - Transaction Handling
     private func listenForTransactions() -> Task<Void, Error> {
-        Task.detached { [weak self] in
-            guard let self = self else {
-                 print("PurchaseManager instance deallocated before transaction listener could run.")
-                 return
-             }
+        // Thay Task.detached bằng Task để giữ an toàn cho actor context
+        Task { [weak self] in
+            guard let self = self else { return }
 
             for await result in StoreKit.Transaction.updates {
                 do {
@@ -146,6 +149,7 @@ public class PurchaseManager: /*NSObject,*/ ObservableObject {
                     let productID = transaction.productID
                     let isTransactionActive = (transaction.revocationDate == nil && transaction.revocationReason == nil)
 
+                    // Xử lý cập nhật state trên MainActor
                     await MainActor.run {
                          var currentIDs = self.purchasedProductIDs
                          var stateChanged = false
@@ -154,69 +158,65 @@ public class PurchaseManager: /*NSObject,*/ ObservableObject {
                              if !currentIDs.contains(productID) {
                                  currentIDs.insert(productID)
                                  stateChanged = true
-                                 print("Transaction listener (MainActor): Added \(productID)")
+                                 print("Transaction listener: Added \(productID)")
                              }
                          } else {
                              if currentIDs.contains(productID) {
                                  currentIDs.remove(productID)
                                  stateChanged = true
-                                 print("Transaction listener (MainActor): Removed \(productID) (revoked/expired)")
+                                 print("Transaction listener: Removed \(productID) (revoked/expired)")
                              }
                          }
 
-                         // *** IMPORTANT: Only update isPurchased and save if debug override is NOT active ***
                          if !self.isDebugOverrideActive {
                              if stateChanged {
                                  self.purchasedProductIDs = currentIDs
                                  let newPurchaseState = !currentIDs.isEmpty
                                  if self.isPurchased != newPurchaseState {
                                      self.isPurchased = newPurchaseState
-                                     // *** Save the updated state to UserDefaults ***
-                                     self.userDefaults.set(newPurchaseState, forKey: kIsPremium)
-                                     print("Transaction listener (MainActor): isPurchased updated to \(self.isPurchased) and saved.")
+                                     self.userDefaults.set(newPurchaseState, forKey: self.kIsPremium)
+                                     print("Transaction listener: isPurchased updated to \(self.isPurchased) and saved.")
                                  }
-                                  print("Transaction listener (MainActor): State updated. purchasedProductIDs: \(currentIDs)")
                              }
                          } else {
-                             // If override is active, only update the internal ID set, but DO NOT change isPurchased or save to UserDefaults
                              if stateChanged {
                                  self.purchasedProductIDs = currentIDs
-                                 print("Transaction listener (MainActor): Override ACTIVE. Updated purchasedProductIDs: \(currentIDs). isPurchased remains \(self.isPurchased).")
+                                 print("Transaction listener: Override ACTIVE. isPurchased remains \(self.isPurchased).")
                              }
                          }
                     }
+                    
+                    // GỌI FINISH DUY NHẤT Ở ĐÂY
                     await transaction.finish()
                     print("Transaction listener: Finished transaction \(transaction.id)")
 
                 } catch {
-                    // StoreKit error handling
                     print("Transaction update error: \(error)")
-                    // Update errorMessage on main thread using the captured self
                     await MainActor.run { self.errorMessage = "Transaction Error: \(error.localizedDescription)" }
                 }
             }
         }
     }
     
-    // Check verification status
     private func checkVerified<T>(_ result: VerificationResult<T>) throws -> T {
         switch result {
         case .unverified(_, let error):
-            throw error // Verification error
+            throw error
         case .verified(let safe):
-            return safe // Transaction is verified
+            return safe
         }
     }
 
     // MARK: - Product Loading
-    public func loadProducts() async {
-        guard !isLoading else { return } // Prevent concurrent loading
-        print("🚀 Loading products...")
+    public func loadProducts(forceReload: Bool = false) async {
+        // Tránh load lại nếu đã có data (trừ khi forceReload) và tránh dồn request
+        guard (products.isEmpty || forceReload) && !isLoading else { return }
+        
+        print("🚀 Loading products for IDs: \(productIDs)...")
         await MainActor.run { isLoading = true; errorMessage = nil }
 
         do {
             let storeProducts = try await Product.products(for: productIDs)
-            // Sort products, e.g., by price or type
             let sortedProducts = storeProducts.sorted { $0.price < $1.price }
             
             await MainActor.run {
@@ -240,9 +240,7 @@ public class PurchaseManager: /*NSObject,*/ ObservableObject {
     
     // MARK: - Purchase Flow
     public func buyProduct(_ product: Product) async -> Bool {
-        // Removed check for existing purchase to allow upgrades/crossgrades and testing
-        
-        guard !isLoading else { // Prevent double tapping
+        guard !isLoading else {
             print("Purchase already in progress.")
             return false
         }
@@ -252,17 +250,20 @@ public class PurchaseManager: /*NSObject,*/ ObservableObject {
 
         do {
             let result = try await product.purchase()
-            
             var purchaseSuccess = false
+            
             switch result {
             case .success(let verificationResult):
                 print("Purchase result: Success")
                 do {
-                    let transaction = try checkVerified(verificationResult)
-                    // Purchase verified, update state and finish
-                    await updatePurchasedProducts() // Update based on the new transaction
-                    await transaction.finish()
-                    purchaseSuccess = true // Mark as successful
+                    let _ = try checkVerified(verificationResult)
+                    // Thành công: Cập nhật entitlements
+                    await updatePurchasedProducts()
+                    
+                    // KHÔNG gọi transaction.finish() ở đây nữa, Listener sẽ lo việc đó!
+                    
+                    purchaseSuccess = true
+                    await MainActor.run { purchasePending = false } // Reset trạng thái pending
                 } catch {
                     print("Verification failed after purchase: \(error)")
                     await MainActor.run { errorMessage = "Purchase verification failed." }
@@ -272,50 +273,30 @@ public class PurchaseManager: /*NSObject,*/ ObservableObject {
                 print("Purchase result: Pending")
                 await MainActor.run {
                     errorMessage = "Purchase requires approval (e.g., Ask to Buy)."
-                    purchasePending = true // Indicate pending state
+                    purchasePending = true
                 }
                 
             case .userCancelled:
                 print("Purchase result: User Cancelled")
-                // No error message needed
+                await MainActor.run { purchasePending = false }
                 
             @unknown default:
                 print("Purchase result: Unknown")
-                await MainActor.run { errorMessage = "An unknown error occurred." }
+                await MainActor.run { errorMessage = "An unknown error occurred."; purchasePending = false }
             }
             
             await MainActor.run { isLoading = false }
-            return purchaseSuccess // Return the final success state
+            return purchaseSuccess
             
         } catch StoreKitError.notEntitled {
             print("⚠️ Purchase error: Not entitled.")
-            await MainActor.run { errorMessage = "You are not entitled to this purchase."; isLoading = false }
+            await MainActor.run { errorMessage = "You are not entitled to this purchase."; isLoading = false; purchasePending = false }
             return false
         } catch {
             print("⚠️ Purchase error: \(error)")
-            await MainActor.run { errorMessage = "Purchase failed: \(error.localizedDescription)"; isLoading = false }
+            await MainActor.run { errorMessage = "Purchase failed: \(error.localizedDescription)"; isLoading = false; purchasePending = false }
             return false
         }
-    }
-
-    // MARK: - Get Product Info (For UI Display)
-    public func getInfo(for productType: PurchaseCase) -> ProductInfo? {
-        guard let product = products.first(where: { $0.id == productType.description }) else {
-            return nil // Product not found/loaded
-        }
-        
-        let priceFormatter = NumberFormatter()
-        priceFormatter.numberStyle = .currency
-        priceFormatter.locale = product.priceFormatStyle.locale
-        let localizedPrice = priceFormatter.string(from: product.price as NSNumber) ?? "\(product.price)"
-        
-        return ProductInfo(
-            title: product.displayName,
-            subtitle: product.description,
-            localizePrice: localizedPrice,
-            price: product.price, // Keep as Decimal
-            symbol: product.priceFormatStyle.locale.currencySymbol ?? "$"
-        )
     }
 
     // MARK: - Update Purchased Status
@@ -335,21 +316,23 @@ public class PurchaseManager: /*NSObject,*/ ObservableObject {
         }
         
         await MainActor.run {
-            // *** IMPORTANT: Only update isPurchased and save if debug override is NOT active ***
             if !self.isDebugOverrideActive {
                 self.purchasedProductIDs = currentEntitlements
                 let newPurchaseState = !currentEntitlements.isEmpty
-                if self.isPurchased != newPurchaseState {
-                    self.isPurchased = newPurchaseState
-                    // *** Save the updated state to UserDefaults ***
-                    self.userDefaults.set(newPurchaseState, forKey: kIsPremium)
-                    print("Purchase status changed to: \(self.isPurchased) and saved.")
+                
+                let previousState = self.isPurchased
+                self.isPurchased = newPurchaseState
+                self.userDefaults.set(newPurchaseState, forKey: self.kIsPremium)
+                
+                if previousState != newPurchaseState {
+                    print("✅ Purchase status CHANGED: \(previousState) → \(newPurchaseState) and saved.")
+                } else {
+                    print("✅ Purchase status synced (unchanged): \(self.isPurchased)")
                 }
-                 print("Active entitlements: \(currentEntitlements)")
+                print("Active entitlements: \(currentEntitlements)")
             } else {
-                // If override is active, only update the internal ID set, but DO NOT change isPurchased or save to UserDefaults
                 self.purchasedProductIDs = currentEntitlements
-                print("Purchase status update skipped due to ACTIVE debug override. isPurchased remains \(self.isPurchased). Active entitlements: \(currentEntitlements)")
+                print("⚠️ Purchase status update skipped due to ACTIVE debug override.")
             }
         }
     }
@@ -363,15 +346,14 @@ public class PurchaseManager: /*NSObject,*/ ObservableObject {
         do {
             try await AppStore.sync()
             print("AppStore.sync() completed.")
-            // Update status based on potentially synced transactions
+            
             await updatePurchasedProducts()
-            restoreSuccess = await MainActor.run { isPurchased } // Check final state
+            restoreSuccess = await MainActor.run { isPurchased }
             
             if restoreSuccess {
                 print("✅ Purchases restored successfully.")
             } else {
                 await MainActor.run { errorMessage = "No previous purchases found to restore." }
-                print("ℹ️ No active purchases found after sync.")
             }
         } catch {
             print("⚠️ Restore error: \(error)")
@@ -383,47 +365,59 @@ public class PurchaseManager: /*NSObject,*/ ObservableObject {
     }
 
     // MARK: - Helper Methods
+    public func getInfo(for productType: PurchaseCase) -> ProductInfo? {
+        // Lấy đúng Product ID đang active
+        let targetID = productType.productID(customID: customProductIDs[productType])
+        
+        guard let product = products.first(where: { $0.id == targetID }) else {
+            return nil
+        }
+        
+        let priceFormatter = NumberFormatter()
+        priceFormatter.numberStyle = .currency
+        priceFormatter.locale = product.priceFormatStyle.locale
+        let localizedPrice = priceFormatter.string(from: product.price as NSNumber) ?? "\(product.price)"
+        
+        return ProductInfo(
+            title: product.displayName,
+            subtitle: product.description,
+            localizePrice: localizedPrice,
+            price: product.price,
+            symbol: product.priceFormatStyle.locale.currencySymbol ?? "$"
+        )
+    }
+
+    public func productForType(_ type: PurchaseCase) -> Product? {
+        let targetID = type.productID(customID: customProductIDs[type])
+        return products.first(where: { $0.id == targetID })
+    }
+    
     public func hasFreeTrialForWeekSubscription() -> Bool {
         guard let weeklyProduct = productForType(.week),
               let subscription = weeklyProduct.subscription else {
             return false
         }
-        // Check introductory offer details
         return subscription.introductoryOffer?.paymentMode == .freeTrial
     }
 
-    public func productForType(_ type: PurchaseCase) -> Product? {
-        return products.first(where: { $0.id == type.description })
-    }
-
- 
-    /// Forces the purchase state for debugging purposes.
-    /// This directly sets the `isPurchased` flag and saves it to UserDefaults,
-    /// bypassing standard StoreKit checks until cleared.
-    /// - Parameter forcePremium: The desired debug purchase state.
+    // MARK: - Debug Methods
     public func debugSetPurchaseOverride(forcePremium: Bool) {
         print("⚠️ DEBUG: Forcing purchase state to \(forcePremium)")
-        self.isDebugOverrideActive = true // Activate the override flag
-        self.userDefaults.set(true, forKey: kDebugOverrideActive) // Persist the override flag
-        // Directly update the published property on the main thread
+        self.isDebugOverrideActive = true
+        self.userDefaults.set(true, forKey: kDebugOverrideActive)
+        
         self.isPurchased = forcePremium
-        // Save this forced state to UserDefaults
         self.userDefaults.set(forcePremium, forKey: kIsPremium)
-        print("⚠️ DEBUG: Saved forced state (\(forcePremium)) and activated override flag (key '\(kDebugOverrideActive)')")
-        // No need to update purchasedProductIDs here, as isPurchased is the primary flag from UserDefaults
+        print("⚠️ DEBUG: Saved forced state (\(forcePremium))")
     }
 
-    /// Clears any previously set debug purchase state override and reloads
-    /// the actual state from StoreKit entitlements.
     public func debugClearPurchaseOverride() {
         print("⚠️ DEBUG: Deactivating and clearing purchase state override. Reloading actual state...")
-        self.isDebugOverrideActive = false // Deactivate the flag
-        self.userDefaults.removeObject(forKey: kDebugOverrideActive) // Remove the persisted flag
-        // Task to update from the source of truth
+        self.isDebugOverrideActive = false
+        self.userDefaults.removeObject(forKey: kDebugOverrideActive)
+        
         Task {
             await self.updatePurchasedProducts()
-            // updatePurchasedProducts already runs on MainActor for its final updates
-            // so we can access isPurchased safely after await.
             print("⚠️ DEBUG: Override cleared. Actual purchase state reloaded. isPurchased is now \(self.isPurchased)")
         }
     }
