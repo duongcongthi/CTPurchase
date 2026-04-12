@@ -13,6 +13,7 @@ A lightweight Swift Package for managing In-App Purchases using StoreKit 2, supp
 ## Requirements
 
 - iOS 15.0+
+- macOS 12.0+ if building or using the package on macOS
 - Xcode 13.0+
 
 ## Installation
@@ -39,10 +40,25 @@ struct YourApp: App {
     init() {
         // --- Configuration ---
         
-        // Option 1: Without App Group (uses standard UserDefaults)
+        // Option 1: App only has 2 ids:
+        // BundleID.lifetime and BundleID.week
         PurchaseManager.shared.configure() 
         
-        // Option 2: With App Group (uses shared UserDefaults)
+        // Option 2: Same 2 keys, but custom App Store Connect ids
+        // PurchaseManager.shared.configure(customIDs: [
+        //     .lifetime: "com.yourcompany.yourapp.lifetime",
+        //     .week: "com.yourcompany.yourapp.week"
+        // ])
+        
+        // Option 3: App has many custom premium ids
+        // PurchaseManager.shared.configure(productIDs: [
+        //     "com.yourcompany.yourapp.weekly",
+        //     "com.yourcompany.yourapp.monthly",
+        //     "com.yourcompany.yourapp.yearly",
+        //     "com.yourcompany.yourapp.lifetime"
+        // ])
+
+        // Option 4: With App Group (uses shared UserDefaults)
         // Replace "group.com.yourcompany.yourapp" with your actual App Group ID
         // PurchaseManager.shared.configure(appGroupID: "group.com.yourcompany.yourapp") 
 
@@ -131,6 +147,15 @@ if let lifetimeInfo = purchaseManager.getInfo(for: .lifetime) {
 }
 ```
 
+For apps configured with many custom ids, use the product id directly:
+
+```swift
+if let weeklyInfo = purchaseManager.getInfo(forProductID: "com.yourcompany.yourapp.weekly") {
+    print("Title: \\(weeklyInfo.title)")
+    print("Price: \\(weeklyInfo.localizePrice)")
+}
+```
+
 ### 5. Checking for Free Trials (Example)
 
 ```swift
@@ -139,9 +164,37 @@ if purchaseManager.hasFreeTrialForWeekSubscription() {
 }
 ```
 
+### 6. Checking Offers by In-App Product ID
+
+Use the new in-app id helpers when you need to check a specific product id directly, for example free 3 days or free 7 days.
+
+```swift
+let productID = "com.yourcompany.yourapp.weekly"
+
+Task {
+    // Auto-loads this product id if it has not been loaded yet.
+    let hasAnyTrial = await purchaseManager.fetchHasFreeTrial(forProductID: productID)
+    let has3DaysTrial = await purchaseManager.fetchHasFreeTrial3Days(forProductID: productID)
+    let has7DaysTrial = await purchaseManager.fetchHasFreeTrial7Days(forProductID: productID)
+
+    if let offerInfo = await purchaseManager.fetchIntroductoryOfferInfo(forProductID: productID) {
+        print("Payment mode: \\(offerInfo.paymentMode.rawValue)")
+        print("Duration: \\(offerInfo.durationDescription)")
+        print("Exact days: \\(offerInfo.exactDurationInDays ?? 0)")
+    }
+}
+```
+
+If the product has already been loaded, you can use the non-async checks:
+
+```swift
+let isFree7Days = purchaseManager.hasFreeTrial(forProductID: productID, days: 7)
+let isFree1Week = purchaseManager.hasFreeTrial(forProductID: productID, value: 1, unit: .week)
+```
+
 ## Important Notes
 
--   **Product Identifiers:** Ensure the product IDs defined in your `PurchaseCase` enum match exactly those configured in App Store Connect. The `description` property generates IDs like `your.bundle.id.lifetime`.
+-   **Product Identifiers:** `configure()` loads `BundleID.lifetime` and `BundleID.week`. Use `configure(customIDs:)` for those same 2 keys with custom ids, or `configure(productIDs:)` when an app has many premium ids.
 -   **App Group Setup:** If using `appGroupID`, make sure the App Group is correctly configured in your Xcode project's capabilities for all targets that need access (main app, extensions, etc.).
 -   **Testing:** Test thoroughly using Sandbox accounts and TestFlight. Remember to configure products in App Store Connect.
 -   **Error Handling:** Implement robust error handling based on the `errorMessage` property and the return values of `buyProduct` and `restorePurchases`.
